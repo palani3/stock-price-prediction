@@ -1,4 +1,9 @@
 from pydantic_settings import BaseSettings
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from the .env file before initializing Settings
+load_dotenv()  # Ensure .env file is loaded
 
 class Settings(BaseSettings):
     MONGODB_URL: str = "mongodb://localhost:27017"
@@ -12,6 +17,11 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"
 
     class Config:
-        env_file = ".env"
+        env_file = ".env"  # Specifies that the values should be read from the .env file
 
+# Initialize the settings
 settings = Settings()
+
+# Optional: Print out values for debugging purposes
+print("GOOGLE_CLIENT_ID:", settings.GOOGLE_CLIENT_ID)
+print("GOOGLE_CLIENT_SECRET:", settings.GOOGLE_CLIENT_SECRET)
