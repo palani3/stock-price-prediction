@@ -1,27 +1,25 @@
+# app/config.py
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 import os
 
-# Load environment variables from the .env file before initializing Settings
-load_dotenv()  # Ensure .env file is loaded
+load_dotenv()
 
 class Settings(BaseSettings):
-    MONGODB_URL: str = "mongodb://localhost:27017"
+    # Non-sensitive settings with defaults
     DATABASE_NAME: str = "stock_prediction"
-    SECRET_KEY: str = "your-secret-key"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    GOOGLE_CLIENT_ID: str
-    GOOGLE_CLIENT_SECRET: str
-    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/auth/google/callback"
     FRONTEND_URL: str = "http://localhost:3000"
+    
+    # Settings loaded from environment
+    MONGODB_URL: str = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+    GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    GOOGLE_REDIRECT_URI: str = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback")
 
     class Config:
-        env_file = ".env"  # Specifies that the values should be read from the .env file
+        env_file = ".env"
 
-# Initialize the settings
 settings = Settings()
-
-# Optional: Print out values for debugging purposes
-print("GOOGLE_CLIENT_ID:", settings.GOOGLE_CLIENT_ID)
-print("GOOGLE_CLIENT_SECRET:", settings.GOOGLE_CLIENT_SECRET)
