@@ -272,7 +272,7 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
             try:
                 date_str = row['Date'].strftime('%Y-%m-%d')
                 
-                data_point = StockData(
+                data_point = StockDatas(
                     date=date_str,
                     open=round(float(row['Open']), 2),
                     close=round(float(row['Close']), 2),

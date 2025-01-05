@@ -153,3 +153,50 @@ class PredictionResponse(BaseModel):
 class StockPrice(BaseModel):
     price: float
     timestamp: str
+
+
+
+
+class StockDatas(BaseModel):
+    date: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+class StockResponse(BaseModel):
+    symbol: str
+    interval: str
+    data: List[StockDatas]
+    start_date: Optional[str]
+    end_date: Optional[str]
+    total_records: int
+
+class TrainingResponse(BaseModel):
+    model_accuracy: float
+    validation_accuracy: float
+    latest_prediction: str
+    prediction_confidence: float
+    support_level: float
+    resistance_level: float
+    trading_signals: Dict[str, str]
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "model_accuracy": 0.75,
+                "validation_accuracy": 0.72,
+                "latest_prediction": "buy",
+                "prediction_confidence": 0.85,
+                "support_level": 1200.50,
+                "resistance_level": 1300.75,
+                "trading_signals": {
+                    "2024-01-01": "buy",
+                    "2024-01-02": "hold",
+                    "2024-01-03": "sell"
+                }
+            }
+        }
+
+

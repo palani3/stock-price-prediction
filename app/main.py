@@ -33,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import connect_to_mongodb, close_mongodb_connection
 from app.routes.auth import router as auth_router
 from app.routes.stock import router as stock_router
+from app.routes.chart import router as chart_router
 
 app = FastAPI(title="NSE Stock Price Tracker")
 
@@ -56,3 +57,4 @@ async def shutdown_db_client():
 # Include routers
 app.include_router(auth_router, prefix="/auth", tags=["authentication"])
 app.include_router(stock_router, prefix="/stocks", tags=["stocks"])
+app.include_router(chart_router, prefix="/chart", tags=["chart"])
