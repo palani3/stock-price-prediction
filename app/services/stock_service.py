@@ -265,9 +265,24 @@ def generate_signals(df: pd.DataFrame) -> dict:
     
     signals['final_signal'] = signals.mode(axis=1)[0]
     
-    # Convert the last 5 signals to a dict with string dates
-    last_signals = signals['final_signal'].tail(5)
+    # Get key price levels and signals
+    buy_prices = df.loc[signals['final_signal'] == 'buy', 'close'].iloc[-5:].round(2)
+    sell_prices = df.loc[signals['final_signal'] == 'sell', 'close'].iloc[-5:].round(2)
+    
+    signals_text = []
+    for date, signal in signals['final_signal'].tail(5).items():
+        price = round(df['close'].loc[date], 2)
+        signals_text.append(f"{date.strftime('%Y-%m-%d')}: {signal} at {price}")
+    
+    buy_signals = [f"{date.strftime('%Y-%m-%d')}: {price}" 
+                  for date, price in buy_prices.items()]
+    sell_signals = [f"{date.strftime('%Y-%m-%d')}: {price}" 
+                   for date, price in sell_prices.items()]
+    
     return {
-        date.strftime('%Y-%m-%d'): signal 
-        for date, signal in last_signals.items()
+        'signals': '\n'.join(signals_text),
+        'buy_points': '\n'.join(buy_signals) if buy_signals else 'No recent buy signals',
+        'sell_points': '\n'.join(sell_signals) if sell_signals else 'No recent sell signals'
     }
+    
+    return last_signals
