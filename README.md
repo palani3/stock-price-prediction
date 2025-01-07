@@ -46,5 +46,7 @@ The packages need to be installed
 
 
 Then execute below command
+
 1 . venv\Scripts\activate
+
 2 . uvicorn app.main:app --host 0.0.0.0 --port 8000
