@@ -55,6 +55,7 @@ class BasicInformation(BaseModel):
     industry: Optional[str]
     website: Optional[str]
     business_summary: Optional[str]
+    company_logo: Optional[str] = None
 
 class TradingInformation(BaseModel):
     current_price: Optional[float]

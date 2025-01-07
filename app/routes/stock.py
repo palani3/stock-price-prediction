@@ -4,6 +4,7 @@ import yfinance as yf
 import asyncio
 import json
 from typing import Dict, List
+import aiohttp
 
 
 
@@ -103,9 +104,57 @@ async def search_stocks(search_text: str, current_user: dict = Depends(get_curre
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
+LOGO_PROVIDERS = {
+    "clearbit": lambda website: f"https://logo.clearbit.com/{website}",
+    "polygon": lambda symbol: f"https://s3.polygon.io/logos/{symbol.lower()}/logo.png",
+    "companieslogo": lambda symbol: f"https://companieslogo.com/img/{symbol.lower()}-logo.png",
+    "placeholder": lambda name: f"https://ui-avatars.com/api/?name={name}&size=200&background=random"
+}
+
+async def fetch_logo_url(session, url):
+    """Attempt to fetch a logo URL and verify its validity."""
+    try:
+        async with session.head(url, timeout=2) as response:
+            return url if response.status == 200 else None
+    except:
+        return None
+
+async def get_company_logo(symbol: str, website: str = None, company_name: str = None):
+    """
+    Try multiple sources to get a company logo.
+    Returns the first valid logo URL found or a placeholder.
+    """
+    async with aiohttp.ClientSession() as session:
+        potential_urls = []
+        
+        # Try website-based logo if website is available
+        if website:
+            cleaned_website = website.replace('https://', '').replace('http://', '').split('/')[0]
+            potential_urls.append(LOGO_PROVIDERS["clearbit"](cleaned_website))
+        
+        # Try symbol-based logos
+        clean_symbol = symbol.replace(".NS", "")
+        potential_urls.extend([
+            LOGO_PROVIDERS["polygon"](clean_symbol),
+            LOGO_PROVIDERS["companieslogo"](clean_symbol)
+        ])
+        
+        # Try all potential URLs concurrently
+        tasks = [fetch_logo_url(session, url) for url in potential_urls]
+        results = await asyncio.gather(*tasks)
+        
+        # Return first valid URL or placeholder
+        for url in results:
+            if url:
+                return url
+                
+        # Fallback to placeholder
+        return LOGO_PROVIDERS["placeholder"](company_name or clean_symbol)
+
+
 @router.get("/stock/info/{symbol}", response_model=StockInfoResponse)
 async def get_stock_info(symbol: str, current_user: dict = Depends(get_current_user)):
-    """Fetch detailed stock information."""
+    """Fetch detailed stock information including company logo."""
     try:
         if not symbol.endswith(".NS"):
             symbol += ".NS"
@@ -113,12 +162,12 @@ async def get_stock_info(symbol: str, current_user: dict = Depends(get_current_u
         stock = yf.Ticker(symbol)
         info = stock.info
 
-        # Handle ex_dividend_date conversion to string
+        # Handle ex_dividend_date conversion
         ex_dividend_date = info.get("exDividendDate")
         if isinstance(ex_dividend_date, (int, float)):
             ex_dividend_date = datetime.fromtimestamp(ex_dividend_date).strftime("%Y-%m-%d")
 
-        # Calculate PEG ratio manually if it's null
+        # Calculate PEG ratio
         pe_ratio = info.get("trailingPE")
         forward_pe = info.get("forwardPE")
         trailing_eps = info.get("trailingEps")
@@ -126,19 +175,24 @@ async def get_stock_info(symbol: str, current_user: dict = Depends(get_current_u
         
         peg_ratio = None
         if all(v is not None for v in [trailing_eps, forward_eps, pe_ratio]) and trailing_eps > 0:
-            # Calculate expected earnings growth rate
             growth_rate = ((forward_eps - trailing_eps) / abs(trailing_eps)) * 100
-            if growth_rate > 0:  # Only calculate PEG if growth is positive
+            if growth_rate > 0:
                 peg_ratio = pe_ratio / growth_rate
+
+        # Get company logo
+        company_name = info.get("longName")
+        website = info.get("website")
+        logo_url = await get_company_logo(symbol, website, company_name)
 
         response = StockInfoResponse(
             basic_information=BasicInformation(
-                company_name=info.get("longName"),
+                company_name=company_name,
                 symbol=symbol,
                 sector=info.get("sector"),
                 industry=info.get("industry"),
-                website=info.get("website"),
+                website=website,
                 business_summary=info.get("longBusinessSummary"),
+                company_logo=logo_url
             ),
             trading_information=TradingInformation(
                 current_price=info.get("currentPrice"),
@@ -150,19 +204,19 @@ async def get_stock_info(symbol: str, current_user: dict = Depends(get_current_u
                 fifty_two_week_high=info.get("fiftyTwoWeekHigh"),
                 volume=info.get("volume"),
                 average_volume=info.get("averageVolume"),
-                market_cap=info.get("marketCap"),
+                market_cap=info.get("marketCap")
             ),
             key_metrics=KeyMetrics(
                 pe_ratio=pe_ratio,
                 forward_pe=forward_pe,
-                peg_ratio=peg_ratio,  # Use our calculated PEG ratio
+                peg_ratio=peg_ratio,
                 price_to_book=info.get("priceToBook"),
                 trailing_eps=trailing_eps,
                 forward_eps=forward_eps,
                 book_value=info.get("bookValue"),
                 dividend_rate=info.get("dividendRate"),
                 dividend_yield=info.get("dividendYield"),
-                ex_dividend_date=ex_dividend_date,
+                ex_dividend_date=ex_dividend_date
             ),
             financial_metrics=FinancialMetrics(
                 revenue=info.get("totalRevenue"),
@@ -174,12 +228,18 @@ async def get_stock_info(symbol: str, current_user: dict = Depends(get_current_u
                 total_cash=info.get("totalCash"),
                 total_debt=info.get("totalDebt"),
                 current_ratio=info.get("currentRatio"),
-                quick_ratio=info.get("quickRatio"),
-            ),
+                quick_ratio=info.get("quickRatio")
+            )
         )
         return response
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching data for {symbol}: {str(e)}")
+        # Log the error for debugging
+        print(f"Error fetching data for {symbol}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching data for {symbol}: {str(e)}"
+        )
 
 def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
     """
@@ -341,130 +401,60 @@ async def get_stock_data(
 
 class StockManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: Dict[str, WebSocket] = {}  # Using dict to track connections by client ID
+        self.connection_status: Dict[str, bool] = {}  # Track connection status
 
     async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        print(f"Client connected. Total connections: {len(self.active_connections)}")
+        client_id = f"{websocket.client.host}:{websocket.client.port}"
+        
+        # Check if connection already exists and is open
+        if client_id in self.active_connections:
+            existing_ws = self.active_connections[client_id]
+            try:
+                # Test if existing connection is still alive
+                await existing_ws.send_json({"type": "ping"})
+                print(f"Reusing existing connection for client {client_id}")
+                return existing_ws
+            except Exception:
+                # If ping fails, connection is dead, remove it
+                await self.disconnect(existing_ws)
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-        print(f"Client disconnected. Total connections: {len(self.active_connections)}")
+        # Create new connection if needed
+        await websocket.accept()
+        self.active_connections[client_id] = websocket
+        self.connection_status[client_id] = True
+        print(f"New client connected. ID: {client_id}. Total connections: {len(self.active_connections)}")
+        return websocket
+
+    async def disconnect(self, websocket: WebSocket):
+        client_id = f"{websocket.client.host}:{websocket.client.port}"
+        if client_id in self.active_connections:
+            del self.active_connections[client_id]
+            self.connection_status[client_id] = False
+            print(f"Client {client_id} disconnected. Total connections: {len(self.active_connections)}")
 
     async def broadcast(self, data: dict):
-        for connection in self.active_connections:
-            try:
-                await connection.send_json(data)
-            except:
-                await self.disconnect(connection)
+        disconnected_clients = []
+        for client_id, connection in self.active_connections.items():
+            if self.connection_status.get(client_id, False):
+                try:
+                    await connection.send_json(data)
+                except Exception as e:
+                    print(f"Error broadcasting to client {client_id}: {str(e)}")
+                    disconnected_clients.append(connection)
+                    self.connection_status[client_id] = False
+
+        # Clean up disconnected clients
+        for connection in disconnected_clients:
+            await self.disconnect(connection)
+
+    def get_connection(self, client_id: str) -> Optional[WebSocket]:
+        return self.active_connections.get(client_id)
+
+    def is_connected(self, client_id: str) -> bool:
+        return self.connection_status.get(client_id, False)
 
 stock_manager = StockManager()
-
-# def get_stock_prices(symbol: str) -> dict:
-#     """Get price for a single stock with trend analysis"""
-#     try:
-#         stock = yf.Ticker(symbol)
-#         info = stock.info
-        
-#         # Get current price
-#         current_price = None
-#         for field in ['regularMarketPrice', 'currentPrice']:
-#             if field in info and info[field] is not None:
-#                 current_price = info[field]
-#                 break
-        
-#         # Get opening and previous closing prices
-#         open_price = info.get('open')
-#         prev_close = info.get('previousClose')
-        
-#         if current_price and (open_price or prev_close):
-#             # Calculate price change and trend
-#             reference_price = open_price if open_price is not None else prev_close
-#             price_change = current_price - reference_price
-#             percent_change = (price_change / reference_price) * 100
-            
-#             return {
-#                 'symbol': symbol,
-#                 'name': info.get('longName', symbol.replace('.NS', '')),
-#                 'price': current_price,
-#                 'change': round(price_change, 2),
-#                 'change_percent': round(percent_change, 2),
-#                 'trend': 'up' if price_change > 0 else 'down' if price_change < 0 else 'neutral',
-#                 'volume': info.get('volume', 0),
-#                 'market_cap': info.get('marketCap', 0),
-#                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-#             }
-#         return None
-#     except Exception as e:
-#         print(f"Error fetching {symbol}: {str(e)}")
-#         return None
-
-# async def get_index_stocks(index_stocks: List[str]) -> Dict[str, dict]:
-#     """Get prices and trends for all stocks in an index"""
-#     prices = {}
-#     for symbol in index_stocks:
-#         retries = 3
-#         for attempt in range(retries):
-#             try:
-#                 price_data = get_stock_price(symbol)
-#                 if price_data:
-#                     prices[symbol] = price_data
-#                     break
-#                 if attempt < retries - 1:
-#                     await asyncio.sleep(1)
-#             except Exception as e:
-#                 print(f"Attempt {attempt + 1} failed for {symbol}: {str(e)}")
-#                 if attempt < retries - 1:
-#                     await asyncio.sleep(1)
-#     return prices
-
-# @router.get("/Get_all_stock")
-# async def get_all_stocks():
-#     """Get current prices for all tracked stocks"""
-#     prices = await get_stock_prices()  # Add await here
-#     return JSONResponse(content=prices)
-
-# @router.websocket("/ws")
-# async def websocket_endpoint(websocket: WebSocket):
-#     try:
-#         await stock_manager.connect(websocket)
-#         print(f"Client connected from {websocket.client.host}")
-        
-#         try:
-#             while True:
-#                 prices = await get_stock_prices()  # Add await here
-#                 if prices:
-#                     # Add market summary
-#                     advancing = sum(1 for data in prices.values() if data.get('trend') == 'up')
-#                     declining = sum(1 for data in prices.values() if data.get('trend') == 'down')
-#                     unchanged = sum(1 for data in prices.values() if data.get('trend') == 'neutral')
-                    
-#                     data_to_send = {
-#                         'market_summary': {
-#                             'advancing': advancing,
-#                             'declining': declining,
-#                             'unchanged': unchanged,
-#                             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-#                         },
-#                         'stocks': prices
-#                     }
-#                     await websocket.send_json(data_to_send)
-#                 await asyncio.sleep(3)
-                
-#         except WebSocketDisconnect:
-#             print(f"Client disconnected from {websocket.client.host}")
-#             stock_manager.disconnect(websocket)
-#         except Exception as e:
-#             print(f"Error in WebSocket loop: {e}")
-#             if websocket in stock_manager.active_connections:
-#                 stock_manager.disconnect(websocket)
-                
-#     except Exception as e:
-#         print(f"Error in WebSocket connection: {e}")
-#         if websocket in stock_manager.active_connections:
-#             stock_manager.disconnect(websocket)
-
 
 @router.get("/all_indices")
 async def get_all_indices():
@@ -509,69 +499,66 @@ async def get_all_indices():
 
 @router.websocket("/ws/all_indices")
 async def all_indices_websocket(websocket: WebSocket):
-    """WebSocket endpoint for real-time updates of all indices"""
+    """WebSocket endpoint for high-frequency updates of all indices with connection reuse"""
+    client_id = f"{websocket.client.host}:{websocket.client.port}"
+    
     try:
-        await stock_manager.connect(websocket)
-        print(f"Client connected from {websocket.client.host}")
+        # Get or create connection
+        active_websocket = await stock_manager.connect(websocket)
         
-        try:
-            while True:
-                # Fetch data for all indices
+        while True:
+            if not stock_manager.is_connected(client_id):
+                print(f"Connection lost for client {client_id}, attempting to reconnect")
+                active_websocket = await stock_manager.connect(websocket)
+
+            try:
+                # Fetch and prepare data
                 indices_data = {
-                    'nifty50': {
-                        'name': 'NIFTY 50',
-                        'stocks': await get_index_stocks(NIFTY_50_STOCKS)
-                    },
-                    'niftyit': {
-                        'name': 'NIFTY IT',
-                        'stocks': await get_index_stocks(NIFTY_IT_STOCKS)
-                    },
-                    'niftybank': {
-                        'name': 'NIFTY BANK',
-                        'stocks': await get_index_stocks(NIFTY_BANK_STOCKS)
-                    }
+                    'nifty50': {'name': 'NIFTY 50', 'stocks': await get_index_stocks(NIFTY_50_STOCKS)},
+                    'niftyit': {'name': 'NIFTY IT', 'stocks': await get_index_stocks(NIFTY_IT_STOCKS)},
+                    'niftybank': {'name': 'NIFTY BANK', 'stocks': await get_index_stocks(NIFTY_BANK_STOCKS)},
                 }
 
-                # Calculate market summary for each index
+                # Compute market summaries
+                overall_summary = {'advancing': 0, 'declining': 0, 'unchanged': 0}
                 for index_data in indices_data.values():
                     stocks = index_data['stocks']
-                    index_data['market_summary'] = {
-                        'advancing': sum(1 for stock in stocks.values() if stock['trend'] == 'up'),
-                        'declining': sum(1 for stock in stocks.values() if stock['trend'] == 'down'),
-                        'unchanged': sum(1 for stock in stocks.values() if stock['trend'] == 'neutral'),
+                    market_summary = {
+                        'advancing': sum(stock['trend'] == 'up' for stock in stocks.values()),
+                        'declining': sum(stock['trend'] == 'down' for stock in stocks.values()),
+                        'unchanged': sum(stock['trend'] == 'neutral' for stock in stocks.values()),
                         'total_stocks': len(stocks)
                     }
-
-                # Calculate overall market summary
-                total_advancing = sum(index['market_summary']['advancing'] for index in indices_data.values())
-                total_declining = sum(index['market_summary']['declining'] for index in indices_data.values())
-                total_unchanged = sum(index['market_summary']['unchanged'] for index in indices_data.values())
+                    index_data['market_summary'] = market_summary
+                    overall_summary['advancing'] += market_summary['advancing']
+                    overall_summary['declining'] += market_summary['declining']
+                    overall_summary['unchanged'] += market_summary['unchanged']
 
                 data_to_send = {
-                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'overall_summary': {
-                        'advancing': total_advancing,
-                        'declining': total_declining,
-                        'unchanged': total_unchanged
-                    },
-                    'indices': indices_data
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'),
+                    'overall_summary': overall_summary,
+                    'indices': indices_data,
                 }
 
-                await websocket.send_json(data_to_send)
-                await asyncio.sleep(1)  # Update every 3 seconds
+                await active_websocket.send_json(data_to_send)
+                await asyncio.sleep(0.0005)  # Short sleep to prevent CPU overload
+
+            except WebSocketDisconnect:
+                print(f"WebSocket disconnected for client {client_id}")
+                await stock_manager.disconnect(active_websocket)
+                break
                 
-        except WebSocketDisconnect:
-            print(f"Client disconnected from {websocket.client.host}")
-            stock_manager.disconnect(websocket)
-        except Exception as e:
-            print(f"Error in WebSocket loop: {e}")
-            if websocket in stock_manager.active_connections:
-                stock_manager.disconnect(websocket)
-                
+            except Exception as e:
+                print(f"Error in data transmission for client {client_id}: {str(e)}")
+                if stock_manager.is_connected(client_id):
+                    await stock_manager.disconnect(active_websocket)
+                await asyncio.sleep(1)  # Wait before retry
+                continue
+
     except Exception as e:
-        print(f"Error in WebSocket connection: {e}")
-        if websocket in stock_manager.active_connections:
-            stock_manager.disconnect(websocket)
+        print(f"Fatal error in WebSocket connection for client {client_id}: {str(e)}")
+        if stock_manager.is_connected(client_id):
+            await stock_manager.disconnect(active_websocket)
 
 async def get_index_stocks(stock_list: List[str]) -> Dict[str, dict]:
     """Get stock data for a list of symbols with additional metrics"""
