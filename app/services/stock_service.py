@@ -11,20 +11,12 @@ import ta
 
 def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
     """
-    Fetches complete historical stock data for daily, weekly, or monthly intervals.
-    
-    Parameters:
-        symbol: Stock symbol (e.g., 'ITC' or 'ITC.NS')
-        interval: Time interval - can be '1d' (daily), '1wk' (weekly), or '1mo' (monthly)
-        
-    Returns:
-        StockResponse object containing the processed data and metadata
+    Fetches complete historical stock data and today's data.
     """
     try:
-        # First, let's add some debug logging to understand what's happening
         print(f"Fetching data for symbol: {symbol}, interval: {interval}")
 
-        # Validate the interval first
+        # Validate interval
         valid_intervals = ["1d", "1wk", "1mo"]
         if interval not in valid_intervals:
             raise HTTPException(
@@ -41,18 +33,15 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
 
         print(f"Processed symbol: {symbol}")
 
-        # For daily data, let's start from a more recent date to ensure we get data
-        # Many NSE stocks might not have data from 1990
+        # Set date range
         if interval == "1d":
-            start_date = '2010-01-01'  # Starting from 2010 instead of 1990
+            start_date = '2010-01-01'
         else:
             start_date = '1990-01-01'
         
         end_date = datetime.now().strftime('%Y-%m-%d')
         
-        print(f"Fetching data from {start_date} to {end_date}")
-
-        # Add more error checking for the download
+        # Fetch historical data
         try:
             stock_data = yf.download(
                 symbol,
@@ -60,10 +49,10 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
                 end=end_date,
                 interval=interval,
                 progress=False,
-                auto_adjust=True  # Added this to handle stock splits and dividends
+                auto_adjust=True
             )
             
-            print(f"Data fetched. Shape: {stock_data.shape}")
+            print(f"Historical data fetched. Shape: {stock_data.shape}")
             
         except Exception as download_error:
             print(f"Download error: {str(download_error)}")
@@ -79,27 +68,24 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
                 detail=f"No data found for {symbol} with interval {interval}"
             )
 
-        # Process the downloaded data
+        # Process historical data
         stock_data.reset_index(inplace=True)
         stock_data.columns = [col[0] if isinstance(col, tuple) else col for col in stock_data.columns]
 
-        # Add a check for required columns
+        # Validate columns
         required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
         missing_columns = [col for col in required_columns if col not in stock_data.columns]
         if missing_columns:
-            print(f"Missing columns: {missing_columns}")
-            print(f"Available columns: {stock_data.columns.tolist()}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Missing required columns: {missing_columns}"
             )
 
-        # Create the list of processed data points
+        # Process historical data points
         processed_data = []
         for _, row in stock_data.iterrows():
             try:
                 date_str = row['Date'].strftime('%Y-%m-%d')
-                
                 data_point = StockDatas(
                     date=date_str,
                     open=round(float(row['Open']), 2),
@@ -114,6 +100,33 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
                 print(f"Error details: {str(row_error)}")
                 continue
 
+        # Fetch today's data
+        try:
+            stock = yf.Ticker(symbol)
+            today_data = stock.history(period='1d', interval='1d')
+            
+            if not today_data.empty:
+                today = datetime.now().strftime('%Y-%m-%d')
+                today_row = today_data.iloc[-1]
+                
+                today_point = StockDatas(
+                    date=today,
+                    open=round(float(today_row['Open']), 2),
+                    close=round(float(today_row['Close']), 2),
+                    high=round(float(today_row['High']), 2),
+                    low=round(float(today_row['Low']), 2),
+                    volume=int(today_row['Volume'])
+                )
+                
+                # Add today's data if it's not already in the processed data
+                if not processed_data or processed_data[-1].date != today:
+                    processed_data.append(today_point)
+                    print("Added today's data successfully")
+
+        except Exception as today_error:
+            print(f"Error fetching today's data: {str(today_error)}")
+            # Continue without today's data if there's an error
+
         if not processed_data:
             raise HTTPException(
                 status_code=404,
@@ -122,7 +135,7 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
 
         print(f"Successfully processed {len(processed_data)} data points")
 
-        # Add metadata about the data range
+        # Add metadata
         first_date = processed_data[0].date if processed_data else None
         last_date = processed_data[-1].date if processed_data else None
         
