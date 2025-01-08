@@ -2,9 +2,9 @@ The packages need to be installed
 
 1 .  python 3.10 - need to be downloaded the version 3.10 which supports Tensorflow
 
-2 .  venv\Scripts\activate
+2 .  python -m venv venv
 
-3 .  python -m venv venv
+3 .  venv\Scripts\activate 
 
 4 .  pip install -r requirements.txt
 
