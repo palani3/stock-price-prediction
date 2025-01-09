@@ -97,7 +97,9 @@ class StockInfoResponse(BaseModel):
     basic_information: BasicInformation
     trading_information: TradingInformation
     key_metrics: KeyMetrics
+    intrinsic_value: Optional[float] = None
     financial_metrics: FinancialMetrics
+    intrinsic_value: Optional[float] = None
 
 
 
@@ -107,16 +109,21 @@ class StockInfoResponse(BaseModel):
 
 
 
+class NewsItem(BaseModel):
+    title: str
+    publisher: str
+    link: str
+    published: str
+    thumbnail: Optional[str] = None
+
+class StockNews(BaseModel):
+    symbol: str
+    news_items: List[NewsItem]
 
 
 
-
-
-
-
-
-
-
+class StockInfoWithNews(StockInfo):
+    news_items: List[NewsItem]
 
 
 
