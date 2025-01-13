@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+motor
+pydantic-settings
+httpx
+email-validator
+python-jose
+passlib
+google-auth
+requests
+python-multipart
+yfinance
+tensorflow
+scikit-learn
+ta
+aiohttp

@@ -28,7 +28,10 @@ from ..models.stock import (
     StockData,
     PredictionResponse,
     StockDatas,
-    StockPrice
+    StockPrice,
+    NewsItem,
+    StockNews,
+    StockInfoWithNews
 
 )
 from ..utils.auth import get_current_user
@@ -59,49 +62,69 @@ NIFTY_BANK_STOCKS = [
 ]
 
 async def get_indian_stock_list():
-    """Fetch a list of NSE stocks."""
-    try:
-        url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-        df = pd.read_csv(url)
-        return [
-            {"symbol": f"{row['SYMBOL']}.NS", "name": row["NAME OF COMPANY"]}
-            for _, row in df.iterrows()
-        ]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch stock list: {str(e)}")
+   try:
+       # Add both NIFTY 50 variations
+       indices = [
+           {"symbol": "^NSEI", "name": "NIFTY 50 Index"},
+           {"symbol": "NSEI", "name": "NIFTY 50"}
+       ]
+       
+       url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+       df = pd.read_csv(url)
+       stocks = [
+           {"symbol": f"{row['SYMBOL']}.NS", "name": row["NAME OF COMPANY"]}
+           for _, row in df.iterrows()
+       ]
+       
+       return indices + stocks
+   except Exception as e:
+       raise HTTPException(status_code=500, detail=f"Failed to fetch stock list: {str(e)}")
 
 
 @router.get("/search/{search_text}", response_model=StockSearchResponse)
 async def search_stocks(search_text: str, current_user: dict = Depends(get_current_user)):
-    """Search for NSE stocks."""
-    try:
-        companies = await get_indian_stock_list()
-        search_str = search_text.upper()
-        matching_companies = [
-            company
-            for company in companies
-            if search_str in company["name"].upper() or search_str in company["symbol"].upper()
-        ]
+   try:
+       companies = await get_indian_stock_list()
+       search_str = search_text.upper()
+       
+       # Handle NIFTY search special case
+       if search_str == "NSEI" or "NIFTY" in search_str:
+           nifty_info = StockInfo(symbol="^NSEI", name="NIFTY 50 Index")
+           try:
+               nifty = yf.Ticker("^NSEI")
+               info = nifty.info
+               nifty_info.current_price = info.get("regularMarketPrice")
+               nifty_info.day_high = info.get("dayHigh")
+               nifty_info.day_low = info.get("dayLow")
+               nifty_info.volume = info.get("volume")
+               return StockSearchResponse(companies=[nifty_info], count=1)
+           except Exception:
+               pass
 
-        result = []
-        for company in matching_companies:
-            stock_info = StockInfo(symbol=company["symbol"], name=company["name"])
-            try:
-                stock = yf.Ticker(company["symbol"])
-                info = stock.info
-                stock_info.current_price = info.get("currentPrice") or info.get(
-                    "regularMarketPrice"
-                )
-                stock_info.day_high = info.get("dayHigh")
-                stock_info.day_low = info.get("dayLow")
-                stock_info.volume = info.get("volume")
-            except Exception:
-                pass  # Ignore individual stock failures
-            result.append(stock_info)
+       # Regular stock search
+       matching_companies = [
+           company 
+           for company in companies
+           if search_str in company["name"].upper() or search_str in company["symbol"].upper()
+       ]
 
-        return StockSearchResponse(companies=result, count=len(result))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+       result = []
+       for company in matching_companies:
+           stock_info = StockInfo(symbol=company["symbol"], name=company["name"])
+           try:
+               stock = yf.Ticker(company["symbol"])
+               info = stock.info
+               stock_info.current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+               stock_info.day_high = info.get("dayHigh")
+               stock_info.day_low = info.get("dayLow")
+               stock_info.volume = info.get("volume")
+           except Exception:
+               pass
+           result.append(stock_info)
+
+       return StockSearchResponse(companies=result, count=len(result))
+   except Exception as e:
+       raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
 LOGO_PROVIDERS = {
@@ -151,10 +174,97 @@ async def get_company_logo(symbol: str, website: str = None, company_name: str =
         # Fallback to placeholder
         return LOGO_PROVIDERS["placeholder"](company_name or clean_symbol)
 
+def calculate_growth_rate(info: dict) -> float:
+    """Calculate company's growth rate based on historical data."""
+    try:
+        # Get historical growth rates
+        revenue_growth = info.get("revenueGrowth", 0)
+        earnings_growth = info.get("earningsGrowth", 0)
+        
+        # Use the average of revenue and earnings growth, defaulting to conservative values
+        growth_rate = (revenue_growth + earnings_growth) / 2 if revenue_growth and earnings_growth else 0.10
+        
+        # Cap growth rate between 5% and 25% for conservative estimates
+        return min(max(growth_rate, 0.05), 0.25)
+    except:
+        return 0.10  # Default to 10% if calculation fails
+
+def calculate_discount_rate(info: dict) -> float:
+    """Calculate appropriate discount rate based on company metrics."""
+    try:
+        # Get company's beta
+        beta = info.get("beta", 1)
+        
+        # Use CAPM model: Risk-free rate + Beta * Market risk premium
+        risk_free_rate = 0.04  # Approximate 10-year treasury yield
+        market_risk_premium = 0.06  # Historical market risk premium
+        
+        discount_rate = risk_free_rate + (beta * market_risk_premium)
+        
+        # Cap discount rate between 8% and 20%
+        return min(max(discount_rate, 0.08), 0.20)
+    except:
+        return 0.12  # Default to 12% if calculation fails
+
+
+def calculate_intrinsic_value(info: dict) -> Optional[float]:
+    """
+    Calculate intrinsic value using DCF method with more sophisticated assumptions.
+    """
+    try:
+        # Get required financial metrics
+        free_cash_flow = info.get("freeCashflow")
+        total_debt = info.get("totalDebt", 0)
+        total_cash = info.get("totalCash", 0)
+        shares_outstanding = info.get("sharesOutstanding")
+        
+        if not all([free_cash_flow, shares_outstanding]):
+            return None
+
+        # Calculate dynamic rates
+        growth_rate = calculate_growth_rate(info)
+        discount_rate = calculate_discount_rate(info)
+        terminal_growth_rate = min(growth_rate / 2, 0.04)  # Conservative terminal growth
+        forecast_years = 5
+
+        # Calculate future cash flows
+        future_cash_flows = []
+        current_fcf = free_cash_flow
+
+        # Project future cash flows with declining growth rate
+        for year in range(1, forecast_years + 1):
+            # Gradually reduce growth rate towards terminal growth rate
+            adjusted_growth = growth_rate - ((growth_rate - terminal_growth_rate) * (year / forecast_years))
+            current_fcf *= (1 + adjusted_growth)
+            discounted_fcf = current_fcf / ((1 + discount_rate) ** year)
+            future_cash_flows.append(discounted_fcf)
+
+        # Calculate terminal value using perpetuity growth model
+        terminal_fcf = current_fcf * (1 + terminal_growth_rate)
+        terminal_value = terminal_fcf / (discount_rate - terminal_growth_rate)
+        discounted_terminal_value = terminal_value / ((1 + discount_rate) ** forecast_years)
+
+        # Calculate total enterprise value
+        enterprise_value = sum(future_cash_flows) + discounted_terminal_value
+
+        # Adjust for cash and debt to get equity value
+        equity_value = enterprise_value + total_cash - total_debt
+
+        # Calculate per share value
+        intrinsic_value = equity_value / shares_outstanding
+
+        # Add a margin of safety (15%)
+        intrinsic_value *= 0.85
+
+        return round(intrinsic_value, 2)
+
+    except Exception as e:
+        print(f"Error calculating intrinsic value: {str(e)}")
+        return None
 
 @router.get("/stock/info/{symbol}", response_model=StockInfoResponse)
 async def get_stock_info(symbol: str, current_user: dict = Depends(get_current_user)):
-    """Fetch detailed stock information including company logo."""
+    """Fetch detailed stock information including company logo and intrinsic value."""
     try:
         if not symbol.endswith(".NS"):
             symbol += ".NS"
@@ -183,6 +293,9 @@ async def get_stock_info(symbol: str, current_user: dict = Depends(get_current_u
         company_name = info.get("longName")
         website = info.get("website")
         logo_url = await get_company_logo(symbol, website, company_name)
+
+        # Calculate intrinsic value
+        # intrinsic_value = calculate_intrinsic_value(info)
 
         response = StockInfoResponse(
             basic_information=BasicInformation(
@@ -229,17 +342,120 @@ async def get_stock_info(symbol: str, current_user: dict = Depends(get_current_u
                 total_debt=info.get("totalDebt"),
                 current_ratio=info.get("currentRatio"),
                 quick_ratio=info.get("quickRatio")
-            )
+            ),
+            # intrinsic_value=intrinsic_value
         )
         return response
 
     except Exception as e:
-        # Log the error for debugging
         print(f"Error fetching data for {symbol}: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Error fetching data for {symbol}: {str(e)}"
         )
+
+def is_valid_stock(symbol: str) -> bool:
+    """
+    Improved validation for NSE stocks
+    """
+    try:
+        ticker = yf.Ticker(f"{symbol}.NS")
+        # Get basic info - if any of these exist, the stock is valid
+        info = ticker.info
+        return any([
+            info.get('regularMarketPrice'),
+            info.get('currentPrice'),
+            info.get('longName')
+        ])
+    except Exception as e:
+        print(f"Validation error for {symbol}: {str(e)}")
+        return False
+
+async def get_nse_stock_news(symbol: str, limit: int = 10) -> List[NewsItem]:
+    """
+    Get news for NSE stocks with improved error handling and thumbnails
+    """
+    try:
+        ticker_symbol = f"{symbol}.NS"
+        ticker = yf.Ticker(ticker_symbol)
+        news = ticker.news
+        
+        if not news:
+            return []  # Return empty list if no news available
+        
+        formatted_news = []
+        for item in news[:limit]:
+            try:
+                # Get the content object which contains all the details
+                content = item.get('content', item)
+                
+                # Extract thumbnail URL from the nested structure
+                thumbnail_data = content.get('thumbnail', {})
+                resolutions = thumbnail_data.get('resolutions', [])
+                # Get the highest resolution thumbnail
+                thumbnail_url = None
+                if resolutions:
+                    # Sort by size and get the largest
+                    sorted_resolutions = sorted(
+                        resolutions,
+                        key=lambda x: (x.get('width', 0) * x.get('height', 0)),
+                        reverse=True
+                    )
+                    thumbnail_url = sorted_resolutions[0].get('url') if sorted_resolutions else None
+
+                # Parse the publication date
+                published_date = datetime.strptime(content['pubDate'], '%Y-%m-%dT%H:%M:%SZ')
+                
+                news_item = NewsItem(
+                    title=content.get('title', ''),
+                    publisher=content.get('provider', {}).get('displayName', ''),
+                    link=content.get('clickThroughUrl', {}).get('url', ''),
+                    published=published_date.strftime('%Y-%m-%d %H:%M:%S'),
+                    thumbnail=thumbnail_url,
+                    summary=content.get('summary', '')  # Adding summary as well
+                )
+                formatted_news.append(news_item)
+                
+            except KeyError as ke:
+                print(f"Skipping news item due to missing key: {ke}")
+                continue
+            except ValueError as ve:
+                print(f"Date parsing error: {ve}")
+                continue
+            except Exception as e:
+                print(f"Error processing news item: {str(e)}")
+                continue
+            
+        return formatted_news
+        
+    except Exception as e:
+        print(f"Error fetching news for {symbol}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error fetching news: {str(e)}")
+
+# Endpoint to get stock news
+@router.get("/stock/news/{symbol}", response_model=StockNews)
+async def get_stock_news(
+    symbol: str,
+    limit: int = Query(default=10, le=50, ge=1),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get latest news for a NSE listed stock
+    """
+    clean_symbol = symbol.upper().strip().replace(".NS", "")
+    
+    # Add debugging
+    print(f"Checking validity for symbol: {clean_symbol}")
+    is_valid = is_valid_stock(clean_symbol)
+    print(f"Is valid result: {is_valid}")
+    
+    if not is_valid:
+        raise HTTPException(status_code=404, detail=f"Invalid stock symbol: {clean_symbol}")
+    
+    news_items = await get_nse_stock_news(clean_symbol, limit)
+    return StockNews(symbol=clean_symbol, news_items=news_items)
+
+
 
 def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
     """
@@ -253,10 +469,9 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
         StockResponse object containing the processed data and metadata
     """
     try:
-        # First, let's add some debug logging to understand what's happening
         print(f"Fetching data for symbol: {symbol}, interval: {interval}")
 
-        # Validate the interval first
+        # Validate the interval
         valid_intervals = ["1d", "1wk", "1mo"]
         if interval not in valid_intervals:
             raise HTTPException(
@@ -264,19 +479,23 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
                 detail=f"Invalid interval. Please use one of: {', '.join(valid_intervals)}"
             )
 
-        # Handle case sensitivity for NSE stocks
-        if not symbol.endswith('.NS'):
-            symbol = f"{symbol.upper()}.NS"
+        # Special handling for NIFTY 50 index
+        if symbol in ["^NSEI", "NSEI"]:
+            fetch_symbol = "^NSEI"  # Always use ^NSEI for NIFTY 50
         else:
-            base_symbol = symbol[:-3]
-            symbol = f"{base_symbol.upper()}.NS"
+            # Handle case sensitivity for NSE stocks
+            if not symbol.endswith('.NS'):
+                symbol = f"{symbol.upper()}.NS"
+            else:
+                base_symbol = symbol[:-3]
+                symbol = f"{base_symbol.upper()}.NS"
+            fetch_symbol = symbol
 
-        print(f"Processed symbol: {symbol}")
+        print(f"Processed symbol: {fetch_symbol}")
 
-        # For daily data, let's start from a more recent date to ensure we get data
-        # Many NSE stocks might not have data from 1990
+        # Set appropriate date range
         if interval == "1d":
-            start_date = '2010-01-01'  # Starting from 2010 instead of 1990
+            start_date = '2010-01-01'
         else:
             start_date = '1990-01-01'
         
@@ -284,15 +503,14 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
         
         print(f"Fetching data from {start_date} to {end_date}")
 
-        # Add more error checking for the download
         try:
             stock_data = yf.download(
-                symbol,
+                fetch_symbol,
                 start=start_date,
                 end=end_date,
                 interval=interval,
                 progress=False,
-                auto_adjust=True  # Added this to handle stock splits and dividends
+                auto_adjust=True
             )
             
             print(f"Data fetched. Shape: {stock_data.shape}")
@@ -308,14 +526,14 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
             print("No data received from Yahoo Finance")
             raise HTTPException(
                 status_code=404,
-                detail=f"No data found for {symbol} with interval {interval}"
+                detail=f"No data found for {fetch_symbol} with interval {interval}"
             )
 
         # Process the downloaded data
         stock_data.reset_index(inplace=True)
         stock_data.columns = [col[0] if isinstance(col, tuple) else col for col in stock_data.columns]
 
-        # Add a check for required columns
+        # Validate required columns
         required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
         missing_columns = [col for col in required_columns if col not in stock_data.columns]
         if missing_columns:
@@ -326,7 +544,7 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
                 detail=f"Missing required columns: {missing_columns}"
             )
 
-        # Create the list of processed data points
+        # Process data points
         processed_data = []
         for _, row in stock_data.iterrows():
             try:
@@ -354,7 +572,7 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
 
         print(f"Successfully processed {len(processed_data)} data points")
 
-        # Add metadata about the data range
+        # Add metadata
         first_date = processed_data[0].date if processed_data else None
         last_date = processed_data[-1].date if processed_data else None
         

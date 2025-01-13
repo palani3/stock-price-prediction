@@ -24,14 +24,18 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
                 detail=f"Invalid interval. Please use one of: {', '.join(valid_intervals)}"
             )
 
-        # Handle case sensitivity for NSE stocks
-        if not symbol.endswith('.NS'):
-            symbol = f"{symbol.upper()}.NS"
+        # Special handling for NIFTY 50 index
+        if symbol.upper() in ["^NSEI", "NSEI"]:
+            fetch_symbol = "^NSEI"  # Use ^NSEI for NIFTY 50
         else:
-            base_symbol = symbol[:-3]
-            symbol = f"{base_symbol.upper()}.NS"
+            # Handle case sensitivity for regular NSE stocks
+            if not symbol.endswith('.NS'):
+                fetch_symbol = f"{symbol.upper()}.NS"
+            else:
+                base_symbol = symbol[:-3]
+                fetch_symbol = f"{base_symbol.upper()}.NS"
 
-        print(f"Processed symbol: {symbol}")
+        print(f"Processed symbol: {fetch_symbol}")
 
         # Set date range
         if interval == "1d":
@@ -44,7 +48,7 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
         # Fetch historical data
         try:
             stock_data = yf.download(
-                symbol,
+                fetch_symbol,
                 start=start_date,
                 end=end_date,
                 interval=interval,
@@ -65,7 +69,7 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
             print("No data received from Yahoo Finance")
             raise HTTPException(
                 status_code=404,
-                detail=f"No data found for {symbol} with interval {interval}"
+                detail=f"No data found for {fetch_symbol} with interval {interval}"
             )
 
         # Process historical data
@@ -102,7 +106,7 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
 
         # Fetch today's data
         try:
-            stock = yf.Ticker(symbol)
+            stock = yf.Ticker(fetch_symbol)  # Use fetch_symbol here too
             today_data = stock.history(period='1d', interval='1d')
             
             if not today_data.empty:
@@ -139,6 +143,7 @@ def fetch_stock_data(symbol: str, interval: str = "1d") -> StockResponse:
         first_date = processed_data[0].date if processed_data else None
         last_date = processed_data[-1].date if processed_data else None
         
+        # Use original symbol for response
         return StockResponse(
             symbol=symbol,
             interval=interval,
